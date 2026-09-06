@@ -1,150 +1,163 @@
-import type { Critique, SessionStats } from "./types";
+import type { Drill } from "../training/drills";
+import type { Critique, SessionStats, Stance } from "./types";
 
-/** Turn accumulated session stats into coaching feedback, worst problems first. */
-export function buildCritiques(stats: SessionStats): Critique[] {
+const pct = (v: number) => `${Math.round(v * 100)}%`;
+
+/** Turn session stats into coaching feedback, most important first. */
+export function buildCritiques(stats: SessionStats, drill: Drill, stance: Stance): Critique[] {
   const out: Critique[] = [];
-  const { punches, guardUpRatio, durationS } = stats;
-  const minutes = Math.max(durationS / 60, 1 / 60);
+  const { punches, guardUpRatio, activeS } = stats;
+  const minutes = Math.max(activeS / 60, 1 / 60);
+  const leadSide = stance === "orthodox" ? "left" : "right";
+  const sideName = (side: "left" | "right") =>
+    side === leadSide ? `lead (${side})` : `rear (${side})`;
 
-  // --- Guard discipline ---
+  // Guard
   for (const side of ["left", "right"] as const) {
-    const ratio = guardUpRatio[side];
-    const label = side === "left" ? "LEFT" : "RIGHT";
-    if (ratio < 0.55) {
+    const r = guardUpRatio[side];
+    if (r < 0.5) {
       out.push({
         severity: "bad",
-        title: `${label} hand is down`,
-        detail: `Your ${side} hand was in guard only ${Math.round(
-          ratio * 100
-        )}% of the time when not punching. Keep it glued to your cheek — every drop is a free counter for your opponent.`,
+        title: `${side === leadSide ? "Lead" : "Rear"} hand is down`,
+        detail: `Your ${sideName(side)} hand was in guard only ${pct(r)} of the time between punches. Park it on your cheek — a dropped ${side === leadSide ? "lead" : "rear"} hand is the most common way to get caught.`,
       });
-    } else if (ratio < 0.8) {
+    } else if (r < 0.78) {
       out.push({
         severity: "warn",
-        title: `${label} guard drifts`,
-        detail: `${Math.round(
-          (1 - ratio) * 100
-        )}% of the time your ${side} hand drifted below your chin. Recheck it every time you reset.`,
+        title: `${side === leadSide ? "Lead" : "Rear"} guard drifts`,
+        detail: `${pct(1 - r)} of the time your ${sideName(side)} hand sat below your chin. Reset it consciously after every punch until it's automatic.`,
       });
     }
   }
-  if (guardUpRatio.left >= 0.8 && guardUpRatio.right >= 0.8) {
+  if (guardUpRatio.left >= 0.78 && guardUpRatio.right >= 0.78) {
     out.push({
       severity: "good",
       title: "Solid guard",
-      detail: "Both hands stayed home when you weren't punching. Keep that habit under fatigue.",
+      detail: `Both hands stayed home ${pct(Math.min(guardUpRatio.left, guardUpRatio.right))}+ of the time. Keep that discipline as fatigue sets in.`,
     });
   }
 
-  // --- Punch mechanics ---
-  const straights = punches.filter((p) => p.type === "STRAIGHT");
-  if (straights.length >= 3) {
-    const avgExt =
-      straights.reduce((s, p) => s + p.peakElbowAngle, 0) / straights.length;
-    if (avgExt < 158) {
+  // Straight punch mechanics
+  const jabs = punches.filter((p) => p.type === "JAB");
+  const crosses = punches.filter((p) => p.type === "CROSS");
+  for (const [name, list] of [["jab", jabs], ["cross", crosses]] as const) {
+    if (list.length < 3) continue;
+    const avg = list.reduce((s, p) => s + p.peakElbowAngle, 0) / list.length;
+    if (avg < 155) {
       out.push({
         severity: "warn",
-        title: "Punches falling short",
-        detail: `Your straight punches averaged ${Math.round(
-          avgExt
-        )}° at the elbow (aim for 165°+). Turn the shoulder over and snap the arm out fully — you're leaving reach on the table.`,
+        title: `${name === "jab" ? "Jab" : "Cross"} isn't extending`,
+        detail: `Your ${name} averaged ${Math.round(avg)}° at the elbow (target 165°+). ${
+          name === "cross"
+            ? "Pivot the rear foot and turn the hip through — the arm follows."
+            : "Snap the shoulder forward and turn the fist over at the end."
+        }`,
       });
     } else {
       out.push({
         severity: "good",
-        title: "Full extension",
-        detail: `Straight punches averaged ${Math.round(
-          avgExt
-        )}° of elbow extension — good snap and reach.`,
+        title: `${name === "jab" ? "Jab" : "Cross"} extension`,
+        detail: `${Math.round(avg)}° average elbow extension on the ${name} — good reach and snap.`,
       });
     }
   }
 
-  const retractions = punches
-    .map((p) => p.retractionMs)
-    .filter((r): r is number => r !== null);
-  if (retractions.length >= 3) {
-    const avgRet = retractions.reduce((s, r) => s + r, 0) / retractions.length;
-    if (avgRet > 450) {
+  // Recovery
+  const rets = punches.map((p) => p.retractionMs).filter((r): r is number => r !== null);
+  if (rets.length >= 3) {
+    const avg = rets.reduce((s, r) => s + r, 0) / rets.length;
+    if (avg > 450) {
       out.push({
         severity: "bad",
         title: "Slow hand return",
-        detail: `On average it took ${Math.round(
-          avgRet
-        )}ms to bring your hand back after punching. Snap it back on the same line — lazy returns get countered.`,
+        detail: `Hands took ${Math.round(avg)}ms on average to come back after a punch. The punch isn't finished until the hand is back on your face — snap it back on the same line.`,
       });
-    } else if (avgRet > 300) {
+    } else if (avg > 300) {
       out.push({
         severity: "warn",
         title: "Bring it back faster",
-        detail: `Hands return to guard in ~${Math.round(
-          avgRet
-        )}ms. Think "touch and recoil" — the punch isn't over until the hand is back.`,
+        detail: `~${Math.round(avg)}ms average return. Think "touch and recoil" rather than push.`,
       });
-    }
-  }
-
-  // --- Output & variety ---
-  if (durationS > 20) {
-    const perMin = punches.length / minutes;
-    if (perMin < 8) {
+    } else {
       out.push({
-        severity: "warn",
-        title: "Low output",
-        detail: `Only ${punches.length} punches in ${Math.round(
-          durationS
-        )}s (${perMin.toFixed(1)}/min). Stay busy — even light touch jabs keep your rhythm and your opponent honest.`,
+        severity: "good",
+        title: "Sharp recovery",
+        detail: `Hands back in guard in ~${Math.round(avg)}ms. That's what keeps you safe after you commit.`,
       });
-    }
-    const left = punches.filter((p) => p.hand === "LEFT").length;
-    const right = punches.length - left;
-    if (punches.length >= 10) {
-      const skew = Math.max(left, right) / punches.length;
-      if (skew > 0.8) {
-        const lazy = left > right ? "right" : "left";
-        out.push({
-          severity: "warn",
-          title: `Neglected ${lazy} hand`,
-          detail: `${Math.round(
-            skew * 100
-          )}% of your punches came from one side. Double up with the ${lazy} — predictable boxers get timed.`,
-        });
-      }
-      const hooks = punches.filter((p) => p.type !== "STRAIGHT").length;
-      if (hooks === 0) {
-        out.push({
-          severity: "warn",
-          title: "All straight punches",
-          detail:
-            "No hooks or uppercuts detected. Mix in shots from different angles so your combinations are harder to read.",
-        });
-      }
     }
   }
 
-  // --- Movement ---
-  if (durationS > 20 && stats.headMovement < 0.012) {
+  // Output & balance
+  const ppm = punches.length / minutes;
+  if (activeS > 30 && ppm < drill.targetPpm * 0.4) {
     out.push({
       severity: "warn",
-      title: "Static head",
-      detail:
-        "Your head barely moved off the centerline. Slip or change levels after you punch — don't be a stationary target.",
+      title: "Low output",
+      detail: `${punches.length} punches in ${Math.round(activeS)}s of work (${ppm.toFixed(0)}/min). Stay busy — light touch jabs keep your rhythm and your opponent honest.`,
     });
   }
-  if (stats.stanceWidthRatio > 0 && durationS > 10) {
-    if (stats.stanceWidthRatio < 0.8) {
+  if (punches.length >= 10) {
+    const left = punches.filter((p) => p.hand === "LEFT").length;
+    const skew = Math.max(left, punches.length - left) / punches.length;
+    if (skew > 0.8) {
+      const lazy = left > punches.length - left ? "right" : "left";
+      out.push({
+        severity: "warn",
+        title: `Neglected ${lazy} hand`,
+        detail: `${pct(skew)} of your punches came from one side. Double up with the ${lazy} — one-sided boxers get timed.`,
+      });
+    }
+    const bent = punches.filter((p) => p.type !== "JAB" && p.type !== "CROSS").length;
+    if (bent === 0 && drill.focus !== "combos") {
+      out.push({
+        severity: "warn",
+        title: "All straight punches",
+        detail: "No hooks or uppercuts detected. Mix in shots from different angles so your combinations are harder to read.",
+      });
+    }
+  }
+
+  // Combos
+  if (drill.targetCombo) {
+    const hits = stats.combos[drill.targetCombo] ?? 0;
+    out.push({
+      severity: hits >= minutes * 6 ? "good" : hits > 0 ? "warn" : "bad",
+      title: `${hits} clean ${drill.targetCombo}s`,
+      detail:
+        hits === 0
+          ? `No ${drill.targetCombo} combinations registered. Throw the punches within about half a second of each other so they read as one combination.`
+          : `You landed the ${drill.targetCombo} ${hits} times (${(hits / minutes).toFixed(1)}/min). ${
+              hits >= minutes * 6 ? "Good flow." : "Aim for 6+ per minute with a full return to guard after each."
+            }`,
+    });
+  }
+
+  // Movement & stance
+  if (activeS > 30 && stats.headMovement < 0.02) {
+    out.push({
+      severity: drill.focus === "movement" ? "bad" : "warn",
+      title: "Static head",
+      detail: "Your head barely left the centerline. Slip, roll or change levels after you punch — don't be a stationary target.",
+    });
+  } else if (activeS > 30 && stats.headMovement > 0.05) {
+    out.push({
+      severity: "good",
+      title: "Head is moving",
+      detail: "Good off-centerline movement between punches. Keep it purposeful, not bouncy.",
+    });
+  }
+  if (stats.stanceWidthRatio > 0 && activeS > 15) {
+    if (stats.stanceWidthRatio < 1.0) {
       out.push({
         severity: "warn",
         title: "Stance too narrow",
-        detail:
-          "Your feet are closer than shoulder width. Widen the base for balance and power transfer from the ground up.",
+        detail: "Your feet are inside shoulder width. Widen the base so power can travel from the floor and you can't be pushed off balance.",
       });
-    } else if (stats.stanceWidthRatio > 2.3) {
+    } else if (stats.stanceWidthRatio > 2.4) {
       out.push({
         severity: "warn",
         title: "Stance too wide",
-        detail:
-          "Your feet are very spread out, which kills mobility. Bring them in so you can step and pivot freely.",
+        detail: "Very wide base — that kills mobility. Bring the feet in so you can step and pivot freely.",
       });
     }
   }
@@ -153,13 +166,10 @@ export function buildCritiques(stats: SessionStats): Critique[] {
     out.push({
       severity: "good",
       title: "Hand speed",
-      detail: `Fastest hand recorded at ${stats.maxSpeedMph.toFixed(
-        0
-      )} mph across ${punches.length} punches.`,
+      detail: `Peak hand speed ${stats.maxSpeedMph.toFixed(0)} mph across ${punches.length} punches.`,
     });
   }
 
   const order = { bad: 0, warn: 1, good: 2 };
-  out.sort((a, b) => order[a.severity] - order[b.severity]);
-  return out;
+  return out.sort((a, b) => order[a.severity] - order[b.severity]);
 }

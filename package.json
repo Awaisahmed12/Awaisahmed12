@@ -4,7 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "postinstall": "node scripts/copy-wasm.mjs",
     "dev": "vite",
+    "prebuild": "node scripts/copy-wasm.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },

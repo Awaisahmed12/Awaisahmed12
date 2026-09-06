@@ -1,27 +1,41 @@
 import { FilesetResolver, PoseLandmarker } from "@mediapipe/tasks-vision";
 
-const WASM_URL =
-  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
-const MODEL_URL =
-  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+// Both the WASM runtime (copied from node_modules at install) and the model
+// are served with the app so nothing depends on a third-party CDN at runtime.
+const asset = (p: string) => new URL(import.meta.env.BASE_URL + p, document.baseURI).href;
+const WASM_URL = asset("mediapipe/wasm");
+const MODEL_URL = asset("models/pose_landmarker_lite.task");
 
 let landmarker: PoseLandmarker | null = null;
+let pending: Promise<PoseLandmarker> | null = null;
 
-export async function getPoseLandmarker(): Promise<PoseLandmarker> {
-  if (landmarker) return landmarker;
+async function create(delegate: "GPU" | "CPU") {
   const vision = await FilesetResolver.forVisionTasks(WASM_URL);
-  landmarker = await PoseLandmarker.createFromOptions(vision, {
-    baseOptions: { modelAssetPath: MODEL_URL, delegate: "GPU" },
+  return PoseLandmarker.createFromOptions(vision, {
+    baseOptions: { modelAssetPath: MODEL_URL, delegate },
     runningMode: "VIDEO",
     numPoses: 1,
     minPoseDetectionConfidence: 0.5,
     minPosePresenceConfidence: 0.5,
     minTrackingConfidence: 0.5,
   });
-  return landmarker;
 }
 
-// MediaPipe pose landmark indices used by the analyzer
+export function getPoseLandmarker(): Promise<PoseLandmarker> {
+  if (landmarker) return Promise.resolve(landmarker);
+  if (pending) return pending;
+  pending = (async () => {
+    try {
+      landmarker = await create("GPU");
+    } catch {
+      // WebGL delegate is unavailable on some phones/browsers; CPU is slower but works
+      landmarker = await create("CPU");
+    }
+    return landmarker;
+  })();
+  return pending;
+}
+
 export const LM = {
   NOSE: 0,
   L_SHOULDER: 11,
